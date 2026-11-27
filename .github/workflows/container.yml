@@ -1,0 +1,112 @@
+# Builds the turnkey SmallTide container (ROCm HIP runtime included) and pushes it to the GitHub
+# Container Registry as ghcr.io/<owner>/smalltide (Actions tab -> "Container" -> "Run workflow").
+#
+# GitHub's runners have no AMD GPU: the image build checks that the kernels were compiled for every
+# requested architecture, but nothing is run on a GPU here.
+
+name: Container
+
+on:
+  workflow_dispatch:
+    inputs:
+      archs:
+        description: "GPU kernel architectures to embed, comma-separated"
+        type: string
+        default: "gfx1201,gfx1200"
+        required: true
+      rocm:
+        description: "ROCm release whose HIP runtime the image ships (TheRock packages)"
+        type: string
+        default: "10.2"
+        required: true
+      push:
+        description: "Push the image to ghcr.io (off: build only)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  container:
+    name: Build container
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      ARCHS: ${{ inputs.archs }}
+      ROCM: ${{ inputs.rocm }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Validate inputs
+        run: |
+          echo "$ARCHS" | grep -Eq '^gfx[0-9a-f]+(,gfx[0-9a-f]+)*$' || { echo "::error::archs must look like gfx1201,gfx1200"; exit 1; }
+          echo "$ROCM" | grep -Eq '^[0-9]+\.[0-9]+$' || { echo "::error::rocm must look like 10.2"; exit 1; }
+
+      - name: Image name and tags
+        id: meta
+        run: |
+          image="ghcr.io/$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')/smalltide"
+          version="$(tr -d '[:space:]' < VERSION)"
+          {
+            echo "image=$image"
+            echo "tags<<EOF"
+            echo "$image:latest"
+            echo "$image:$version"
+            echo "$image:$version-rocm$ROCM"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Log in to ghcr.io
+        if: ${{ inputs.push }}
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: docker/Dockerfile
+          build-args: |
+            ROCM=${{ env.ROCM }}
+            ARCH=${{ env.ARCHS }}
+            GITHUB_SHA=${{ github.sha }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          push: ${{ inputs.push }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Summary
+        env:
+          IMAGE: ${{ steps.meta.outputs.image }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+          PUSHED: ${{ inputs.push }}
+        run: |
+          {
+            echo "### SmallTide container"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Image | \`$IMAGE\` |"
+            echo "| Tags | $(echo "$TAGS" | sed 's/.*:/`/; s/$/`/' | paste -sd ' ') |"
+            echo "| Pushed | $PUSHED |"
+            echo "| ROCm HIP runtime | $ROCM |"
+            echo "| Kernels | \`$ARCHS\` |"
+            echo ""
+            echo "Informational: this runner has no GPU, so the kernels were built but not executed. Run it with:"
+            echo ""
+            echo '```'
+            echo "docker run -d --name smalltide --device /dev/kfd --device /dev/dri --group-add video \\"
+            echo "  --security-opt seccomp=unconfined -p 127.0.0.1:8000:8000 -v smalltide-data:/data $IMAGE:latest"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

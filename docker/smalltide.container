@@ -1,0 +1,50 @@
+# SmallTide as a systemd service with Podman Quadlet. See docker/README.md.
+#
+# Rootless (your user):  copy to ~/.config/containers/systemd/smalltide.container
+# Rootful (system):      copy to /etc/containers/systemd/smalltide.container
+# Then:                  systemctl [--user] daemon-reload && systemctl [--user] start smalltide
+# Rootless services stop at logout unless lingering is on: loginctl enable-linger $USER
+
+[Unit]
+Description=SmallTide inference server (Inkling-2-Mini on AMD RDNA 4)
+Wants=network-online.target
+After=network-online.target
+
+[Container]
+Image=ghcr.io/raspy135/smalltide:latest
+ContainerName=smalltide
+AddDevice=/dev/kfd
+AddDevice=/dev/dri
+# Keeps your access to the GPU devices in a rootless container.
+GroupAdd=keep-groups
+SecurityLabelDisable=true
+SeccompProfile=unconfined
+# This machine only. The API has no authentication: to open it to your network, use the second
+# line instead, and only on a trusted network or behind a reverse proxy that checks credentials.
+PublishPort=127.0.0.1:8000:8000
+#PublishPort=8000:8000
+# .env, the model (about 21 GB, downloaded on first start) and the routing priors.
+Volume=smalltide-data:/data
+# To use a model you already have, mount its parent directory (the one holding Inkling-2-Mini):
+#Volume=/path/to/models:/data/models
+# headless (monitor on the motherboard or another GPU) or monitor (monitor on the Radeon card).
+Environment=SMALLTIDE_CONFIG=headless
+#Environment=HF_TOKEN=...
+# Engine settings (VRAM margin, context, ...) from a file laid out like docker/.env.example;
+# they override the same keys in the .env inside the volume. %h is your home directory.
+#EnvironmentFile=%h/.config/smalltide/smalltide.env
+# Lets `podman auto-update` pull new images (enable podman-auto-update.timer).
+AutoUpdate=registry
+HealthCmd=python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)"
+HealthInterval=30s
+HealthStartPeriod=60m
+
+[Service]
+Restart=on-failure
+# 143 = stopped by SIGTERM, the normal way `systemctl stop` ends the server.
+SuccessExitStatus=143
+# The image is about 1.4 GB; the first-start model download happens after the unit has started.
+TimeoutStartSec=900
+
+[Install]
+WantedBy=default.target

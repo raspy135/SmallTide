@@ -10,6 +10,8 @@ pub mod ffi;
 pub mod d3d12;
 #[cfg(windows)]
 pub mod wddm;
+#[cfg(not(windows))]
+pub mod linux;
 
 pub use backend::HipBackend;
 pub use ffi::{HipProbeReport, HipRuntime};

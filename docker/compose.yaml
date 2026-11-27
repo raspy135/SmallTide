@@ -1,0 +1,49 @@
+# SmallTide with Docker Compose or podman-compose. See docker/README.md.
+#
+#   docker compose -f docker/compose.yaml up -d            # pull the published image
+#   docker compose -f docker/compose.yaml up -d --build    # or build it from this checkout
+#
+# Settings come from docker/.env (cp docker/.env.example docker/.env) or the shell: the container
+# settings below, plus any engine setting (VRAM, context, ...), which overrides the same key in the
+# .env inside the data volume. The server listens on 127.0.0.1 only unless SMALLTIDE_BIND says
+# otherwise: the API has no authentication.
+
+name: smalltide
+
+services:
+  smalltide:
+    image: ${SMALLTIDE_IMAGE:-ghcr.io/raspy135/smalltide:latest}
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: smalltide
+    restart: unless-stopped
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    group_add:
+      - ${SMALLTIDE_GROUP:-video}
+    security_opt:
+      - seccomp=unconfined
+      - label=disable # SELinux hosts (Fedora, RHEL); ignored elsewhere
+    ports:
+      - "${SMALLTIDE_BIND:-127.0.0.1}:${SMALLTIDE_PUBLISH_PORT:-8000}:8000"
+    # Passes docker/.env into the container, so engine settings in it reach smalltide-cli.
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      SMALLTIDE_CONFIG: ${SMALLTIDE_CONFIG:-headless}
+      HF_TOKEN: ${HF_TOKEN:-}
+    volumes:
+      - ${SMALLTIDE_DATA:-smalltide-data}:/data
+    # First start downloads about 21 GB before the server listens.
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60m
+      retries: 3
+
+volumes:
+  smalltide-data:

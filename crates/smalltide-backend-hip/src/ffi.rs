@@ -394,17 +394,26 @@ mod arch_tests {
 
 impl HipRuntime {
     pub fn load() -> Result<Self> {
-        let candidates = ["amdhip64_7.dll", "amdhip64_6.dll", "amdhip64.dll"];
+        #[cfg(windows)]
+        let candidates: &[&str] = &["amdhip64_7.dll", "amdhip64_6.dll", "amdhip64.dll"];
+        #[cfg(not(windows))]
+        let candidates: &[&str] = crate::linux::HIP_RUNTIME_CANDIDATES;
         let mut last_err = String::new();
-        for name in candidates {
+        for &name in candidates {
             match unsafe { Library::new(name) } {
                 Ok(lib) => return Self::from_library(lib, name.to_string()),
                 Err(e) => last_err = format!("{name}: {e}"),
             }
         }
-        Err(SmallTideError::BackendUnavailable(format!(
+        #[cfg(windows)]
+        return Err(SmallTideError::BackendUnavailable(format!(
             "failed to load any AMD HIP runtime DLL ({last_err}). Install AMD Software: Adrenalin Edition (26.10.44+ recommended)."
-        )))
+        )));
+        #[cfg(not(windows))]
+        return Err(SmallTideError::BackendUnavailable(format!(
+            "failed to load any AMD HIP runtime library ({last_err}). {}",
+            crate::linux::HIP_RUNTIME_HINT
+        )));
     }
 
     fn from_library(lib: Library, loaded_dll: String) -> Result<Self> {

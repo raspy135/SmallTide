@@ -95,10 +95,14 @@ fn main() {
         }
         Some("bench-nvme") => run_bench_nvme(),
         Some("load-test") => {
+            #[cfg(windows)]
+            let default_dir = r"models\Inkling-2-Mini";
+            #[cfg(not(windows))]
+            let default_dir = "models/Inkling-2-Mini";
             let dir = args
                 .get(2)
                 .map(String::as_str)
-                .unwrap_or(r"models\Inkling-2-Mini");
+                .unwrap_or(default_dir);
             run_load_test(Path::new(dir));
         }
         Some("run") => {

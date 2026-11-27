@@ -1,6 +1,6 @@
 # SmallTide
 
-**Adaptive native-weight multimodal MoE inference for [Inkling-2-Mini](https://huggingface.co/thinkingmachines/Inkling-2-Mini) (30B total / 3.8B active, text + vision) on a single 16 GB AMD Radeon RX 9070 XT on Windows.**
+**Adaptive native-weight multimodal MoE inference for [Inkling-2-Mini](https://huggingface.co/thinkingmachines/Inkling-2-Mini) (30B total / 3.8B active, text + vision) on a single 16 GB AMD Radeon RX 9070 XT on Windows (Linux build from source: see [Linux](#linux)).**
 
 ![The live expert map while the server decodes at 66 tokens a second: token routes climbing through the 48 layers, resident experts, rescues and background loads](docs/expert-map.png)
 
@@ -54,7 +54,7 @@ The test says how often the top choice changes, not whether the answers are wors
 ## Requirements
 
 - **GPU:** an AMD Radeon RDNA 4 card with 16 GB+: **RX 9070 XT** (developed & measured here), **RX 9060 XT 16 GB** (verified by community), or **RX 9070 / Radeon AI PRO R9700 32 GB** (expected to work). See [Supported cards](#supported-cards).
-- **OS:** Windows 11 (64-bit)
+- **OS:** Windows 11 (64-bit), or Linux x86-64 with a ROCm HIP runtime (see [Linux](#linux) for its requirements)
 - **Driver:** **AMD Software: Adrenalin Edition 26.10.44 or newer** (ships `amdhip64_7.dll` and fixes the 26.5.1–26.9.1 WDDM residency cap bug — no ROCm SDK needed)
 - **System RAM:** 32 GB recommended (16 GB of it holds the warm RAM expert tier so misses rescue over PCIe instead of NVMe; 10 GB with the monitor on the motherboard)
 - **Disk:** ~36 GB free on NVMe (~21 GB Hugging Face checkpoint + ~14.7 GB packed `experts.stide`)
@@ -300,6 +300,37 @@ To build a standalone pre-built Windows release zip (for GitHub Releases):
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\package-release.ps1
 ```
+
+---
+
+## Linux
+
+SmallTide also builds and runs on Linux from source. Windows and Linux share the same engine and HIP kernels; only the platform layer differs (expert reads use `O_DIRECT`, the HIP runtime is `libamdhip64.so`), and `smalltide.sh` replaces `smalltide.cmd` / `smalltide.ps1` with the same commands and `.env` files.
+
+**Status:** run on one RX 9070 XT (Fedora, ROCm HIP runtime 7.1, monitor on the card). There is no pre-built Linux release yet.
+
+**Requirements:**
+
+- **ROCm HIP runtime** 6.x or 7.x with RDNA 4 support (`libamdhip64.so`, from your distribution's ROCm packages or `/opt/rocm`). Your user needs access to `/dev/kfd` and `/dev/dri` (usually the `render` and `video` groups).
+- **`hipcc`** and **[Rust](https://rustup.rs/)** to build. `hipcc` is found via `SMALLTIDE_HIPCC`, `ROCM_PATH` / `HIP_PATH`, `/opt/rocm*/bin`, then `PATH`. Without it the build still succeeds but has no GPU kernels, and `probe` fails.
+- **`curl`** for the model download, and **Python 3** only for `bench/` and `tools/`.
+- RAM and disk as in [Requirements](#requirements).
+
+```bash
+git clone https://github.com/raspy135/SmallTide.git
+cd SmallTide
+./smalltide.sh build      # or: scripts/build.sh --test
+./smalltide.sh setup      # .env files, probe, ~22 GB download, pack experts.stide
+./smalltide.sh serve .env.monitor    # monitor on the card
+./smalltide.sh serve .env.headless   # monitor on the motherboard / iGPU
+```
+
+**Differences from Windows:**
+
+- **VRAM budget:** there is no DXGI on Linux, so `SMALLTIDE_POOL_BUDGET=resident` reads the amdgpu driver's device-wide VRAM counters (`/sys/class/drm/card*/device/mem_info_vram_used` / `_total`). They include the desktop's share, which HIP's own free-memory figure leaves out (about 1.2 GiB on the test machine), so the pools are sized to what is really free and shrunk again once the engine buffers exist. With the monitor on the card, the RX 9070 XT kept about 2,450 of 3,072 experts resident with `.env.monitor`, all at VRAM speed. The templates' `SMALLTIDE_RESIDENT_MARGIN_MB` / `SMALLTIDE_RESIDENT_TAIL_MB` are tuned for Windows; on Linux, `256` / `128` kept image input working and gave about 2,490 experts.
+- **btrfs:** reads of compressed btrfs files go through the page cache even with `O_DIRECT`. `scripts/download_inkling2.sh` turns compression off on the model directories before downloading; for a directory you create yourself, run `btrfs property set <dir> compression none` before copying the model into it.
+- **Server address:** both `.env` templates set `SMALLTIDE_HOST=0.0.0.0`, which listens on every network interface. Set `SMALLTIDE_HOST=127.0.0.1` to keep the server local.
+- **Release bundle:** `scripts/package-release.sh` builds `dist/smalltide-v<version>-linux-x64-<arch>.tar.gz`. It still needs the ROCm HIP runtime on the target machine.
 
 See [LIMITATIONS.md](LIMITATIONS.md) for known constraints, [CREDITS.md](CREDITS.md) for attributions, and [docs/PROGRESS.md](docs/PROGRESS.md) for engineering notes.
 

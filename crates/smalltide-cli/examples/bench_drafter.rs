@@ -115,7 +115,10 @@ fn main() {
         let _ = backend.free_pinned(x_pin);
     }
 
+    #[cfg(windows)]
     let model_dir = Path::new(r"models\Inkling-2-Mini");
+    #[cfg(not(windows))]
+    let model_dir = Path::new("models/Inkling-2-Mini");
     let (unembed_fp8, embed_norm, embed_bf16_host) = if use_real {
         let mpath = model_dir.join("model-00001-of-00001.safetensors");
         let hdr = inspect_safetensors_header(&mpath).expect("inspect model");

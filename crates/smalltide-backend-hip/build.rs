@@ -1,5 +1,6 @@
 use std::env;
 use std::fmt::Write as _;
+#[cfg_attr(not(windows), allow(unused_imports))] // `Path` is used by the Windows search only
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -8,6 +9,14 @@ use std::process::Command;
 /// The first entry is the fallback when the runtime cannot name the card's architecture.
 const DEFAULT_ARCHS: &str = "gfx1201,gfx1200";
 
+// Linux/Unix hosts: `hipcc` search in its own file; the function below is the Windows one.
+#[cfg(not(windows))]
+#[path = "build_linux.rs"]
+mod build_linux;
+#[cfg(not(windows))]
+use build_linux::find_hipcc;
+
+#[cfg(windows)]
 fn find_hipcc() -> Option<PathBuf> {
     if let Ok(p) = env::var("SMALLTIDE_HIPCC") {
         let pb = PathBuf::from(p);

@@ -1,0 +1,119 @@
+# Builds the Linux release bundle on demand (Actions tab -> "Linux build" -> "Run workflow").
+#
+# GitHub's runners have no AMD GPU, so the kernels are compiled but cannot be run here: instead
+# of `smalltide-cli probe`, the "Check GPU kernels" step verifies that every requested
+# architecture produced a non-empty code object for the right target.
+
+name: Linux build
+
+on:
+  workflow_dispatch:
+    inputs:
+      archs:
+        description: "GPU kernel architectures to embed, comma-separated (the first one names the bundle)"
+        type: string
+        default: "gfx1201,gfx1200"
+        required: true
+      run_tests:
+        description: "Run the workspace tests (CPU only)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Linux x64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      # Plain Ubuntu plus only the ROCm compiler packages (next step): the full ROCm dev image is
+      # 9.5 GB compressed, too close to a runner's free disk.
+      image: ubuntu:24.04
+    env:
+      # Read by crates/smalltide-backend-hip/build.rs (validated there: names like gfx1201 only).
+      SMALLTIDE_HIP_ARCH: ${{ inputs.archs }}
+      CARGO_TERM_COLOR: always
+      # ROCm release (TheRock packages); same repository as docker/Dockerfile.
+      ROCM: "10.2"
+      ROCM_PATH: /opt/rocm/core-10.2
+
+    steps:
+      - name: Install ROCm compiler
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates curl
+          install -d /etc/apt/keyrings
+          curl -fsSL https://stable.repo.amd.com/rocm/gpg/packages.gpg -o /etc/apt/keyrings/amdrocm.asc
+          echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/amdrocm.asc] https://stable.repo.amd.com/rocm/core/packages/ubuntu2404 stable main" \
+            > /etc/apt/sources.list.d/rocm.list
+          apt-get update
+          apt-get install -y --no-install-recommends "amdrocm-runtime-dev$ROCM" build-essential pkg-config
+          echo "$ROCM_PATH/bin" >> "$GITHUB_PATH"
+
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Show toolchain
+        run: |
+          rustc --version
+          cargo --version
+          hipcc --version | grep -E "HIP version|clang version"
+
+      - name: Build and package
+        run: scripts/package-release.sh --no-probe --arch "$SMALLTIDE_HIP_ARCH"
+
+      - name: Check GPU kernels
+        # The kernels are embedded in smalltide-cli (include_bytes!), so check the packaged binary:
+        # without hipcc the build still succeeds but embeds empty placeholders.
+        run: |
+          bin=$(ls dist/*/smalltide-cli)
+          status=0
+          for arch in $(echo "$SMALLTIDE_HIP_ARCH" | tr ',' ' '); do
+            # Code object size, for information (Cargo's build-directory layout varies by version).
+            f=$(find target/release -name "smalltide_$arch.hsaco" -printf '%T@ %p\n' | sort -n | tail -n 1 | cut -d' ' -f2-)
+            size=$( [ -n "$f" ] && stat -c %s "$f" || echo 0 )
+            if grep -aq "amdgcn-amd-amdhsa--$arch" "$bin"; then
+              echo "$arch: embedded in $bin ($size-byte code object)"
+            else
+              echo "::error::$arch: no kernel code object embedded in $bin (code object size $size; was hipcc found?)"
+              status=1
+            fi
+          done
+          exit $status
+
+      - name: Run tests
+        if: ${{ inputs.run_tests }}
+        run: cargo test --release --workspace
+
+      - name: Summary
+        run: |
+          bundle=$(ls dist/*.tar.gz)
+          {
+            echo "### Linux build"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Bundle | \`$(basename "$bundle")\` ($(du -h "$bundle" | cut -f1)) |"
+            echo "| SHA256 | \`$(cut -d' ' -f1 "$bundle.sha256")\` |"
+            echo "| Kernels | \`$SMALLTIDE_HIP_ARCH\` |"
+            echo "| Toolchain | $(rustc --version), HIP $(hipcc --version | sed -n 's/^HIP version: //p') |"
+            echo "| HIP runtime libs | \`$(cd "$ROCM_PATH/lib" 2>/dev/null && ls libamdhip64.so* 2>/dev/null | tr '\n' ' ')\` |"
+            echo ""
+            echo "Informational: this runner has no GPU, so the kernels were built but not executed. On the target machine, \`./smalltide.sh probe\` gives a quick hardware check (needs the ROCm HIP runtime, libamdhip64.so)."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: smalltide-linux-x64
+          path: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
+          if-no-files-found: error

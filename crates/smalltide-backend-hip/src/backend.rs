@@ -358,9 +358,11 @@ impl HipBackend {
             };
             Some((i.current_usage, resident))
         }
+        // Linux: (device-wide VRAM used, total) from amdgpu sysfs, see `linux::amdgpu_vram_used_total`.
         #[cfg(not(windows))]
         {
-            None
+            let total = self.device_info().ok()?.total_vram_bytes as u64;
+            crate::linux::amdgpu_vram_used_total(total)
         }
     }
 
